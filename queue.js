@@ -6,6 +6,9 @@ class FIFOQueue {
     #Last = null;
     #Length = 0;
 
+    //Store a promise and its resolve function for use by get_wait
+    #AsyncPromise = [null, null];
+
     //Add an entry to the end of the queue
     put(Entry){
         //Define an object for the new entry with a pointer pointing to its previous entry (if its not the only entry in the queue)
@@ -33,6 +36,14 @@ class FIFOQueue {
         this.#Last = NewEntry;
 
         this.#Length++;
+
+        //If there is a resolv function then call this now, this will "wake up" any get_wait requests that are waiting for an entry to be added to the queue
+        if (this.#AsyncPromise[1] !== null){
+            this.#AsyncPromise[1]();
+        
+            //And clear the resolve function as we only ever need to resolve a promise once
+            this.#AsyncPromise[1] = null;
+        }
     }
 
     //Get an entry from the start of the queue
@@ -55,9 +66,51 @@ class FIFOQueue {
             this.#Length--;
 
             return CurrentEntry['Data'];
+
         } else {
             return null;
         }
+    }
+
+    //Returns an entry from the queue, waits asyncronously for an entry to be added if there are no entrys in the queue
+    async get_wait(timeout=null){
+        //Get the start timestamp, this lets us check if we have reached the timeout before continuing to wait for entrys to be added to the queue
+        const start = performance.now();
+
+        while (true){
+            //First attempt to get an entry from this queue
+            const Entry = this.get();
+
+            //If an entry was found then return it now
+            if (Entry !== null){
+                return Entry;
+
+            } else {       
+                //Check if there is already a waiting promise that is unresolved, if there is not then add one now
+                if (this.#AsyncPromise[1] === null){
+                    this.#AsyncPromise[0] = new Promise((resolv, reject) => {this.#AsyncPromise[1] = resolv;});
+                }
+
+                //If there is a timeout defined, then we wait to wait for either our timeout function or the waiting promise to resolve
+                if (timeout !== null){
+                    //Check to ensure the timeout has not been reached before we start waiting for an entry, as we are waiting in a loop the timeout may have been already reached
+                    if (timeout - (performance.now() - start) <= 0){
+                        return null;//If the timeout has been reached then return null
+                    }
+
+                    const Sleep = new Promise((resolv, reject) => {setTimeout(() => {resolv();}, timeout - (performance.now() - start));});
+                    
+                    //Wait for either the sleep function to resolve(timeout expiry) or the data available promise to be resolved
+                    await Promise.any([
+                        Sleep,
+                        this.#AsyncPromise[0]
+                    ]);
+
+                } else {//Otherwise there is no timeout, wait indefinatly for an entry to be added
+                    await this.#AsyncPromise[0]
+                }
+            }
+        }        
     }
 
     //Return the length of the queue
@@ -65,7 +118,6 @@ class FIFOQueue {
         return this.#Length;
     }
 }
-
 
 //Run benchmarks of both the FIFO queue and the same functionality implemented with an array
 function BenchMark(){
@@ -110,8 +162,6 @@ function BenchMark(){
         QueueA.shift();
     }
     console.log(`Array Gets: ${(performance.now() - start) * 10000}`);
-
-
 }
 
 //Export the FIFOQueue
